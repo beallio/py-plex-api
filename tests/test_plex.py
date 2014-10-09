@@ -50,6 +50,14 @@ class testPlexServer(unittest.TestCase):
         library = testPlexServer.library
         self.assertIsInstance(library.__str__(), str)
 
-    def test_recentlyadded(self):
+    def test_recentlyadded_all(self):
         library = testPlexServer.library
         self.assertIsInstance(library.get_recently_added(), str)
+
+    def test_recentlyadded_tvshows(self):
+        library = testPlexServer.library
+        self.assertIsInstance(library.get_recently_added(library.TVSHOWS), str)
+
+    def test_recentlyadded_movies(self):
+        library = testPlexServer.library
+        self.assertIsInstance(library.get_recently_added(library.MOVIES), str)

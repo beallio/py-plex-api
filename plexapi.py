@@ -12,6 +12,7 @@ import json
 
 
 LOGGER = logging.getLogger(__name__)
+JSON_OUTPUT = True
 
 
 def convert_xml_to_json(server_ouput):
@@ -27,6 +28,14 @@ def split_output(result):
         except TypeError:
             pass
     return result
+
+
+def determine_output(values):
+    if JSON_OUTPUT:
+        output = json.dumps(values)
+    else:
+        output = values
+    return output
 
 
 class Server(object):
@@ -83,23 +92,23 @@ class Server(object):
 
     def get_info(self):
         xml = self.query(Server.SERVERINFO)
-        output = json.dumps({key: xml.attrib[key] for key in xml.attrib})
-        return output
+        output = {key: xml.attrib[key] for key in xml.attrib}
+        return determine_output(output)
 
     def get_servers(self):
         xml = self.query(Server.SERVERS)
-        output = json.dumps([element.attrib for element in xml])
-        return output
+        output = [element.attrib for element in xml]
+        return determine_output(output)
 
     def get_preferences(self):
         xml = self.query(Server.PREFS)
-        output = json.dumps([element.attrib for element in xml])
-        return output
+        output = [element.attrib for element in xml]
+        return determine_output(output)
 
     def get_channels(self):
         xml = self.query(Server.CHANNELS_ALL)
-        output = json.dumps([element.attrib for element in xml])
-        return output
+        output = [element.attrib for element in xml]
+        return determine_output(output)
 
     def library(self):
         return Library(server=self)
@@ -150,7 +159,6 @@ class Library(object):
     def __init__(self, server):
         assert isinstance(server, Server)
         self._server = server
-        self._section_key_mapping = self._map_section_keys()
 
     def __repr__(self):
         return self
@@ -172,17 +180,12 @@ class Library(object):
             output += self._get_movie_data(xml)
         else:
             output += self._get_tvshow_data(xml) + self._get_movie_data(xml)
-        return json.dumps(output)
+        return determine_output(output)
 
     def get_sections(self):
         xml = self._server.query(self._server.LIBRARYSECTIONS)
         output = [element.attrib for element in xml]
-        return json.dumps(output)
-
-    def _map_section_keys(self):
-        xml = self._server.query(self._server.LIBRARYSECTIONS)
-        return {int(element.attrib['key']): element.attrib['type'] for
-                element in xml}
+        return determine_output(output)
 
     def _get_movie_data(self, xml):
         assert isinstance(xml, Element)
@@ -198,7 +201,7 @@ class Library(object):
         videos = xml.findall('Directory')
         output = []
         for element in videos:
-            output.append(TVShow(self, element)._data)
+            output.append(TVShow(self, element).get_data)
         return output
 
 
@@ -210,8 +213,8 @@ class Video(object):
         assert isinstance(video_data, Element)
         self._library = library
         self._server = self._library._server
-        self._element = video_data
-        self._data = None
+        self._video_data = video_data
+        self._data = self._extract_data()
 
     def __repr__(self):
         pass
@@ -219,7 +222,8 @@ class Video(object):
     def __str__(self):
         return str(self._data)
 
-    def get_info(self):
+    @property
+    def get_data(self):
         return self._data
 
     def _query_show_metadata(self, metadata_key, index):
@@ -241,34 +245,38 @@ class Video(object):
 
     def _extract_data(self):
         # To be overridden by subclass
-        pass
+        return
 
     def _process_metadata(self, metadata):
         # To be overridden by subclass
+        return
+
+
+class Section(object):
+    def __init__(self, library):
+        assert isinstance(library, Library)
         pass
+
+
+class Season(object):
+    def __init__(self, library):
+        assert isinstance(library, Library)
+        pass
+    pass
 
 
 class TVShow(Video):
     def __init__(self, library, video_data):
         super(TVShow, self).__init__(library, video_data)
-        self._data = self._extract_data()
-
-    @property
-    def get_json(self):
-        return json.dumps(self._data)
-
-    @property
-    def get_data(self):
-        return self._data
 
     def _extract_data(self):
         output = {}
-        elem_data = self._element.attrib
+        elem_data = self._video_data.attrib
         output.update(type=elem_data.get('librarySectionTitle', 'Unknown'),
                       series_summary=elem_data.get('parentSummary', ''),
                       series_title=elem_data.get('parentTitle', ''),
                       series_coverart=elem_data.get('parentThumb', ''),
-                      season_coverart=elem_data.get('art', ''),
+                      season_coverart=elem_data.get('thumb', ''),
                       season=elem_data.get('title', ''))
         try:
             show_index = int(elem_data['leafCount'])
@@ -279,7 +287,7 @@ class TVShow(Video):
             video_metadata = self._query_show_metadata(shows_in_season,
                                                        show_index)
             output.update(self._process_metadata(video_metadata))
-        return json.dumps(output)
+        return determine_output(output)
 
     def _process_metadata(self, metadata):
         """
@@ -298,22 +306,36 @@ class TVShow(Video):
             assert isinstance(dt_obj, datetime.datetime)
             return dt_obj.strftime(self.DATE_FORMAT)
 
+        def check_dates(value, date_format=None):
+            """
+            Check if Originally Available Date and Added at date exist.
+            Convert to date time objects, and format datetime object
+            :param value: key value for lookup in element
+            :type value: str
+            :param date_format: datetime format string
+            :type date_format: str
+            :return output: datetime.datetime
+            :return output_conv: str
+            """
+            try:
+                if date_format:
+                    output = datetime.datetime.strptime(attribs[value],
+                                                        date_format)
+                else:
+                    output = datetime.datetime.fromtimestamp(
+                        int(attribs[value]))
+                output_conv = convert_date(output)
+            except KeyError:
+                # Originally Available At data not available
+                output, output_conv = ['Not available'] * 2
+            return output, output_conv
+
         assert isinstance(metadata, Element)
         output = {}
         attribs = metadata.attrib
-        try:
-            orig_avail_conv = datetime.datetime.strptime(
-                attribs['originallyAvailableAt'], '%Y-%m-%d')
-            orig_avail_conv = convert_date(orig_avail_conv)
-        except KeyError:
-            # Originally Available At data not available
-            orig_avail_conv = 'Not available'
-        try:
-            added_at_conv = datetime.datetime.fromtimestamp(int(
-                attribs['addedAt']))
-            added_at_conv = convert_date(added_at_conv)
-        except KeyError:
-            added_at_conv = 'Not available'
+        orig_avail, orig_avail_conv = check_dates('originallyAvailableAt',
+                                                  '%Y-%m-%d')
+        added_at, added_at_conv = check_dates('addedAt')
         output.update(show_coverart=attribs.get('thumb', ''),
                       duration_seconds=float(
                           attribs.get('duration', 0)) / 1000.0,
@@ -324,10 +346,15 @@ class TVShow(Video):
                       addedAt=added_at_conv,
                       basetype=attribs.get('type', 0))
         for element in metadata:
-            if element.tag in output:
-                output[element.tag] += [element.attrib]
+            if element.tag == 'Media':
+                value = Media(element).get_info
             else:
-                output[element.tag] = [element.attrib]
+                value = element.attrib
+                value = value['tag']
+            if element.tag in output:
+                output[element.tag] += [value]
+            else:
+                output[element.tag] = [value]
         return output
 
 
@@ -338,8 +365,52 @@ class Movie(Video):
 
     def _extract_data(self):
         output = {}
-        elem_data = self._element.attrib
+        elem_data = self._video_data.attrib
         return json.dumps(output)
+
+
+class Media(object):
+    """
+    Media object.  Returns data regarding the media type for a Video
+    """
+    def __init__(self, data):
+        assert isinstance(data, Element)
+        self._data = data
+        self._output = self._parse_data()
+
+    @property
+    def get_info(self):
+        """
+        Returns parsed data regarding media type
+        :return: dict
+        """
+        return self._output
+
+    def _parse_data(self):
+        """
+        Parses data for media type from container element
+        :return: dict
+        """
+        def save_values(data):
+            """
+            Loops through element attribute dictionary and saves data to output
+            dict
+            :param data: element attribute dictionary
+            :type data: Element
+            :return: None
+            """
+            for key in data.attrib:
+                try:
+                    # attempt to save key as int
+                    output[key] = int(data.attrib[key])
+                except (ValueError, KeyError):
+                    # not an integer, save as original value
+                    output[key] = data.attrib[key]
+        output = {}
+        save_values(self._data)
+        for element in self._data:
+            save_values(element)
+        return determine_output(output)
 
 
 class PlexConnectionError(Exception):
