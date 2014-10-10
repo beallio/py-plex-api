@@ -4,10 +4,10 @@ import urlparse
 from collections import OrderedDict, namedtuple
 from operator import itemgetter
 import datetime
-from xml.etree.ElementTree import XML, Element, tostringlist, tostring
-
-from xmltodict import parse as xmlparse
 import json
+
+from xml.etree.ElementTree import XML, Element, tostring
+from xmltodict import parse as xmlparse
 
 
 LOGGER = logging.getLogger(__name__)
@@ -165,21 +165,20 @@ class Base(object):
         self._query = query
 
     def __repr__(self):
-        return self._info
+        return self.query()
 
     def __str__(self):
-        return str(convert_xml_to_json(self._info))
+        return str(convert_xml_to_json(self.query()))
 
     @property
     def json(self):
-        return convert_xml_to_json(self._info)
+        return convert_xml_to_json(self.query())
 
     @property
     def xml(self):
-        return XML(self._info)
+        return XML(self.query())
 
-    @property
-    def _info(self):
+    def query(self):
         return self._server.query(self._query)
 
 
@@ -227,6 +226,7 @@ class RecentlyAdded(Base):
 class RecentlyAddedVideos(object):
     def __init__(self, class_obj, query):
         self._class_obj = class_obj
+        self._server = class_obj._server
         self._query = query
 
     @property
@@ -239,8 +239,17 @@ class RecentlyAddedVideos(object):
     def xml(self):
         return self._get_videos_xml()
 
+    @property
+    def list(self):
+        if self._query == RecentlyAdded.MOVIES:
+            return [Movie(xml=movie, server=self._server) for movie in
+                    self._get_videos_xml()]
+        if self._query == RecentlyAdded.EPISODES:
+            return [Episode(xml=episode, server=self._server) for episode in
+                    self._get_videos_xml()]
+
     def _get_videos_xml(self):
-        xml = XML(self._class_obj._info)
+        xml = XML(self._class_obj.query())
         return xml.findall(self._query)
 
 
@@ -264,51 +273,6 @@ class Library(Base):
         return RecentlyAdded(self._server, self._server.LIBRARYSECTIONS)
 
 
-class Video(object):
-    DATE_FORMAT = '%m/%d/%Y'
-
-    def __init__(self, library, video_data):
-        assert isinstance(library, Library)
-        assert isinstance(video_data, Element)
-        self._library = library
-        self._server = self._library._server
-        self._video_data = video_data
-
-    def __repr__(self):
-        return str(self.get_data())
-
-    def __str__(self):
-        return str(self.get_data())
-
-    def get_data(self):
-        return self._extract_data()
-
-    def _query_show_metadata(self, metadata_key, index):
-        assert isinstance(metadata_key, str)
-        assert isinstance(index, int)
-        shows_key = metadata_key.split('/')
-        shows_key = '/'.join(shows_key[-2:])
-        try:
-            metadata = self._server.query(self._server.METADATA, shows_key)
-            # use index to find show in season container
-            # shows are in array base 1, so offset by -1 to find correct show
-            metadata = metadata[index - 1]
-        except KeyError as err:
-            raise PlexMissingVideoKey(err)
-        except urllib2.URLError as err:
-            raise PlexConnectionError(err)
-        else:
-            return metadata
-
-    def _extract_data(self):
-        # To be overridden by subclass
-        return
-
-    def _process_metadata(self, metadata):
-        # To be overridden by subclass
-        return
-
-
 class Section(object):
     def __init__(self, library):
         assert isinstance(library, Library)
@@ -322,7 +286,160 @@ class Season(object):
     pass
 
 
+class Video(object):
+    def __init__(self, server, xml):
+        assert isinstance(server, Server)
+        assert isinstance(xml, Element)
+        self._server = server
+        self.xml = xml
+        self.__dict__ = dict(self.__dict__.items() + xml.attrib.items())
+
+    def __repr__(self):
+        pass
+
+    def __str__(self):
+        pass
+
+    @property
+    def json(self):
+        return json.dumps(xmlparse(tostring(self.xml)))
+
+    def _get_metadata(self):
+        # to be overwritten by subclass
+        pass
+
+    def _query_season_metadata(self, metadata_key):
+        assert isinstance(metadata_key, str)
+        shows_key = metadata_key.split('/')
+        shows_key = '/'.join(shows_key[-2:])
+        try:
+            metadata = self._server.query(self._server.METADATA, shows_key)
+        except KeyError as err:
+            raise PlexMissingVideoKey(err)
+        except urllib2.URLError as err:
+            raise PlexConnectionError(err)
+        else:
+            return metadata
+
+
 class Episode(Video):
+    def __init__(self, server, xml):
+        super(Episode, self).__init__(server, xml)
+        self._season_metadata = self._get_season_metadata()
+        self.xml = self._get_metadata()
+        self.__dict__ = dict(self.__dict__.items() + self.xml.attrib.items())
+
+    def _get_metadata(self):
+        try:
+            # use index to find show in season container
+            # shows are in array base 1, so offset by -1 to find correct show
+            show_index = int(self.leafCount) - 1
+        except KeyError as err:
+            raise PlexMissingVideoKey(err)
+        else:
+            return self._season_metadata[show_index]
+
+    def _get_season_metadata(self):
+        try:
+            season_key = self.key
+        except KeyError as err:
+            raise PlexMissingVideoKey(err)
+        else:
+            return XML(self. _query_season_metadata(season_key))
+
+
+class Movie(Video):
+    def __init__(self, server, xml):
+        super(Movie, self).__init__(server, xml)
+
+
+class Media(object):
+    """
+    Media object.  Returns data regarding the media type for a Video in
+    a dictionary
+
+        'aspectRatio': '1.78', (width / height)
+        'audioChannels': 6,
+        'audioCodec': 'ac3',
+        'bitrate': 4340,
+        'container': 'mkv',
+        'duration': 1399107, (in microseconds)
+        'file': '/TV/Show Title/Season XX/Filename.ext', (directory location)
+        'height': 720, (in pixels)
+        'id': 2177,
+        'key': '/library/parts/2177/file.ext',
+        'size': 758966231, (in bytes)
+        'videoCodec': 'h264',
+        'videoFrameRate': '24p',
+        'videoResolution': 720,
+        'width': 1280 (in pixels)
+    """
+    def __init__(self, data):
+        assert isinstance(data, Element)
+        self.element = data
+
+    def __repr__(self):
+        return str(self.element)
+
+    def __str__(self):
+        return str(self.get_data())
+
+    def get_data(self):
+        """
+        Returns parsed data regarding media type
+        :return: dict
+        """
+        return determine_output(self._parse_data())
+
+    def _parse_data(self):
+        """
+        Parses data for media type from container element
+        :return: dict
+        """
+        def save_values(data):
+            """
+            Loops through element attribute dictionary and saves data to output
+            dict
+            :param data: element attribute dictionary
+            :type data: Element
+            :return: None
+            """
+            for key in data.attrib:
+                try:
+                    # attempt to save key as int
+                    output[key] = int(data.attrib[key])
+                except (ValueError, KeyError):
+                    # not an integer, save as original value
+                    output[key] = data.attrib[key]
+        output = {}
+        save_values(self.element)
+        for element in self.element:
+            # loop through child element to capture data
+            save_values(element)
+        return output
+
+
+class PlexConnectionError(Exception):
+    """
+    Unable to connect to Plex server
+    """
+    pass
+
+
+class PlexAPIKeyNotFound(Exception):
+    pass
+
+
+class PlexLibraryUndefinedType(Exception):
+    pass
+
+
+class PlexMissingVideoKey(Exception):
+    pass
+
+
+class OldEpisode(Video):
+    #// TODO REMOVE OLD CODE
     def __init__(self, library, video_data):
         super(Episode, self).__init__(library, video_data)
 
@@ -421,99 +538,3 @@ class Episode(Video):
             else:
                 output[element.tag] = [value]
         return output
-
-
-class Movie(Video):
-    def __init__(self, library, video_data):
-        super(Movie, self).__init__(library, video_data)
-        self.json = self._extract_data()
-
-    def _extract_data(self):
-        output = {}
-        elem_data = self._video_data.attrib
-        return json.dumps(output)
-
-
-class Media(object):
-    """
-    Media object.  Returns data regarding the media type for a Video in
-    a dictionary
-
-        'aspectRatio': '1.78', (width / height)
-        'audioChannels': 6,
-        'audioCodec': 'ac3',
-        'bitrate': 4340,
-        'container': 'mkv',
-        'duration': 1399107, (in microseconds)
-        'file': '/TV/Show Title/Season XX/Filename.ext', (directory location)
-        'height': 720, (in pixels)
-        'id': 2177,
-        'key': '/library/parts/2177/file.ext',
-        'size': 758966231, (in bytes)
-        'videoCodec': 'h264',
-        'videoFrameRate': '24p',
-        'videoResolution': 720,
-        'width': 1280 (in pixels)
-    """
-    def __init__(self, data):
-        assert isinstance(data, Element)
-        self.element = data
-
-    def __repr__(self):
-        return str(self.element)
-
-    def __str__(self):
-        return str(self.get_data())
-
-    def get_data(self):
-        """
-        Returns parsed data regarding media type
-        :return: dict
-        """
-        return determine_output(self._parse_data())
-
-    def _parse_data(self):
-        """
-        Parses data for media type from container element
-        :return: dict
-        """
-        def save_values(data):
-            """
-            Loops through element attribute dictionary and saves data to output
-            dict
-            :param data: element attribute dictionary
-            :type data: Element
-            :return: None
-            """
-            for key in data.attrib:
-                try:
-                    # attempt to save key as int
-                    output[key] = int(data.attrib[key])
-                except (ValueError, KeyError):
-                    # not an integer, save as original value
-                    output[key] = data.attrib[key]
-        output = {}
-        save_values(self.element)
-        for element in self.element:
-            # loop through child element to capture data
-            save_values(element)
-        return output
-
-
-class PlexConnectionError(Exception):
-    """
-    Unable to connect to Plex server
-    """
-    pass
-
-
-class PlexAPIKeyNotFound(Exception):
-    pass
-
-
-class PlexLibraryUndefinedType(Exception):
-    pass
-
-
-class PlexMissingVideoKey(Exception):
-    pass
