@@ -25,6 +25,7 @@ def convert_xml_to_json(values):
 def convert_parse_dump_json(xml):
     return json.dumps(xmlparse(tostring(xml)))
 
+
 class Server(object):
     """
 
@@ -60,13 +61,13 @@ class Server(object):
         assert isinstance(port, int)
         self._address = address.rstrip('/')
         self._port = port
-        self._test_server_connection()
+        self.info = self._test_connection()
 
     def __repr__(self):
-        return str(convert_xml_to_json(self._info))
+        return str(convert_xml_to_json(self.info))
 
     def __str__(self):
-        return str(convert_xml_to_json(self._info))
+        return str(convert_xml_to_json(self.info))
 
     @property
     def address_and_port(self):
@@ -78,11 +79,11 @@ class Server(object):
 
     @property
     def json(self):
-        return convert_xml_to_json(self._info)
+        return convert_xml_to_json(self.info)
 
     @property
     def xml(self):
-        return XML(self._info)
+        return XML(self.info)
 
     @property
     def library(self):
@@ -125,7 +126,7 @@ class Server(object):
             resp.close()
         return output
 
-    def _test_server_connection(self):
+    def _test_connection(self):
         """
         Test if connection to Plex is active or not, returns error if unable to
         access _server
@@ -134,12 +135,8 @@ class Server(object):
         :return: bool, PlexConnectionError
         """
         # // TODO Need to complete code for authorization if necessary
-        resp = self.query('serverinfo')
+        resp = self.query(Server.SERVERINFO)
         return resp is not None
-
-    @property
-    def _info(self):
-        return self.query(Server.SERVERINFO)
 
 
 class Base(object):
@@ -225,7 +222,7 @@ class RecentlyAddedVideos(object):
         return self._get_videos_xml()
 
     @property
-    def list(self):
+    def items(self):
         if self._query == RecentlyAdded.MOVIES:
             return [Movie(xml=movie, server=self._server) for movie in
                     self._get_videos_xml()]
@@ -255,7 +252,7 @@ class Library(Base):
 
     @property
     def sections(self):
-        return RecentlyAdded(self._server, self._server.LIBRARYSECTIONS)
+        return Base(self._server, self._server.LIBRARYSECTIONS)
 
 
 class Section(object):
@@ -292,10 +289,9 @@ class Video(object):
     @property
     def media(self):
         """
-        returns list of all media elements for Video object
-        :return: lst
+
         """
-        return [Media(media) for media in self.xml.findall('Media')]
+        return Media(self.xml)
 
     def _get_metadata(self):
         # to be overwritten by subclass
@@ -350,6 +346,31 @@ class Media(object):
     """
     Media object.  Returns data regarding the media type for a Video in
     a dictionary
+    """
+    def __init__(self, xml):
+        assert isinstance(xml, Element)
+        self.xml = xml.findall('Media')
+
+    def __repr__(self):
+        return str(self.__dict__)
+
+    def __str__(self):
+        pass
+
+    @property
+    def json(self):
+        files = [xmlparse(tostring(media_file)) for media_file in self.xml]
+        return json.dumps(files)
+
+    @property
+    def items(self):
+        return [File(media_file) for media_file in self.xml]
+
+
+class File(object):
+    """
+    File-like object.  Returns data regarding the media type for a Video
+    file object
 
         'aspectRatio': '1.78', (width / height)
         'audioChannels': 6,
