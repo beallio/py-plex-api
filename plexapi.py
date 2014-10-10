@@ -3,21 +3,15 @@ import urllib2
 import urlparse
 from collections import OrderedDict, namedtuple
 from operator import itemgetter
-from time import localtime, strftime
 import datetime
-from xml.etree.ElementTree import XML, Element
+from xml.etree.ElementTree import XML, Element, tostringlist, tostring
 
-import xmltodict
+from xmltodict import parse as xmlparse
 import json
 
 
 LOGGER = logging.getLogger(__name__)
 JSON_OUTPUT = True
-
-
-def convert_xml_to_json(server_ouput):
-    xml = XML(server_ouput)
-    return xmltodict.parse(server_ouput)
 
 
 def split_output(result):
@@ -32,9 +26,17 @@ def split_output(result):
 
 def determine_output(values):
     if JSON_OUTPUT:
-        output = json.dumps(values)
+        assert isinstance(values, OrderedDict)
+        output = convert_xml_to_json(values)
     else:
-        output = values
+        output = XML(values)
+    return output
+
+
+def convert_xml_to_json(values):
+    #assert isinstance(values, str)
+    values = xmlparse(values)
+    output = json.dumps(values, sort_keys=True, skipkeys=True)
     return output
 
 
@@ -76,11 +78,10 @@ class Server(object):
         self._test_server_connection()
 
     def __repr__(self):
-        return self.get_info()
+        return str(convert_xml_to_json(self._info))
 
     def __str__(self):
-        print 'Plex library: {}'.format(self.address_and_port)
-        return str(self.get_info())
+        return str(convert_xml_to_json(self._info))
 
     @property
     def address_and_port(self):
@@ -90,28 +91,29 @@ class Server(object):
             address = ''.join([scheme, '://', address])
         return ''.join([address, ':', str(self._port)])
 
-    def get_info(self):
-        xml = self.query(Server.SERVERINFO)
-        output = {key: xml.attrib[key] for key in xml.attrib}
-        return determine_output(output)
+    @property
+    def json(self):
+        return convert_xml_to_json(self._info)
 
-    def get_servers(self):
-        xml = self.query(Server.SERVERS)
-        output = [element.attrib for element in xml]
-        return determine_output(output)
+    @property
+    def xml(self):
+        return XML(self._info)
 
-    def get_preferences(self):
-        xml = self.query(Server.PREFS)
-        output = [element.attrib for element in xml]
-        return determine_output(output)
-
-    def get_channels(self):
-        xml = self.query(Server.CHANNELS_ALL)
-        output = [element.attrib for element in xml]
-        return determine_output(output)
-
+    @property
     def library(self):
-        return Library(server=self)
+        return Library(server=self, query=Server.LIBRARYSECTIONS)
+
+    @property
+    def preferences(self):
+        return Preferences(server=self, query=Server.PREFS)
+
+    @property
+    def servers(self):
+        return Servers(server=self, query=Server.SERVERS)
+
+    @property
+    def channels(self):
+        return Servers(server=self, query=Server.CHANNELS_ALL)
 
     def query(self, api_call, library_id=None):
         """
@@ -136,7 +138,7 @@ class Server(object):
             raise PlexConnectionError(err)
         else:
             resp.close()
-        return XML(output)
+        return output
 
     def _test_server_connection(self):
         """
@@ -150,59 +152,116 @@ class Server(object):
         resp = self.query('serverinfo')
         return resp is not None
 
+    @property
+    def _info(self):
+        return self.query(Server.SERVERINFO)
 
-class Library(object):
-    ALL = 0
-    TVSHOWS = 10
-    MOVIES = 20
 
-    def __init__(self, server):
+class Base(object):
+    def __init__(self, server, query):
         assert isinstance(server, Server)
+        assert isinstance(query, str)
         self._server = server
+        self._query = query
 
     def __repr__(self):
-        return self
+        return self._info
 
     def __str__(self):
-        return str(self.get_sections())
+        return str(convert_xml_to_json(self._info))
 
-    def get_now_playing(self):
-        xml = self._server.query(self._server.NOWPLAYING)
-        return xml
+    @property
+    def json(self):
+        return convert_xml_to_json(self._info)
 
-    def get_recently_added(self, query_type=ALL):
-        assert isinstance(query_type, int)
-        xml = self._server.query(self._server.RECENTLYADDED)
-        output = []
-        if query_type == Library.TVSHOWS:
-            output += self._get_tvshow_data(xml)
-        elif query_type == Library.MOVIES:
-            output += self._get_movie_data(xml)
-        else:
-            output += self._get_tvshow_data(xml) + self._get_movie_data(xml)
-        return determine_output(output)
+    @property
+    def xml(self):
+        return XML(self._info)
 
-    def get_sections(self):
-        xml = self._server.query(self._server.LIBRARYSECTIONS)
-        output = [element.attrib for element in xml]
-        return determine_output(output)
+    @property
+    def _info(self):
+        return self._server.query(self._query)
 
-    def _get_movie_data(self, xml):
-        assert isinstance(xml, Element)
-        videos = xml.findall('Video')
-        output = []
-        for element in videos:
-            # Movie
-            pass
-        return output
 
-    def _get_tvshow_data(self, xml):
-        assert isinstance(xml, Element)
-        videos = xml.findall('Directory')
-        output = []
-        for element in videos:
-            output.append(TVShow(self, element).get_data)
-        return output
+class Preferences(Base):
+    def __init__(self, server, query):
+        super(Preferences, self).__init__(server, query)
+
+
+class Servers(Base):
+    def __init__(self, server, query):
+        super(Servers, self).__init__(server, query)
+
+
+class Channels(Base):
+    def __init__(self, server, query):
+        super(Channels, self).__init__(server, query)
+
+
+class Sections(Base):
+    def __init__(self, server, query):
+        super(Sections, self).__init__(server, query)
+
+
+class NowPlaying(Base):
+    def __init__(self, server, query):
+        super(NowPlaying, self).__init__(server, query)
+
+
+class RecentlyAdded(Base):
+    EPISODES = 'Directory'
+    MOVIES = 'Video'
+
+    def __init__(self, server, query):
+        super(RecentlyAdded, self).__init__(server, query)
+
+    @property
+    def episodes(self):
+        return RecentlyAddedVideos(class_obj=self, query=RecentlyAdded.EPISODES)
+
+    @property
+    def movies(self):
+        return RecentlyAddedVideos(class_obj=self, query=RecentlyAdded.MOVIES)
+
+
+class RecentlyAddedVideos(object):
+    def __init__(self, class_obj, query):
+        self._class_obj = class_obj
+        self._query = query
+
+    @property
+    def json(self):
+        videos_xml = self._get_videos_xml()
+        videos = [xmlparse(tostring(video)) for video in videos_xml]
+        return json.dumps(videos)
+
+    @property
+    def xml(self):
+        return self._get_videos_xml()
+
+    def _get_videos_xml(self):
+        xml = XML(self._class_obj._info)
+        return xml.findall(self._query)
+
+
+class Library(Base):
+    def __init__(self, server, query):
+        super(Library, self).__init__(server, query)
+
+    def __str__(self):
+        return str(self.sections.json)
+
+    @property
+    def nowplaying(self):
+        return NowPlaying(self._server, self._server.NOWPLAYING)
+
+    @property
+    def recentlyadded(self):
+        return RecentlyAdded(self._server, self._server.RECENTLYADDED)
+
+    @property
+    def sections(self):
+        return RecentlyAdded(self._server, self._server.LIBRARYSECTIONS)
 
 
 class Video(object):
@@ -214,17 +273,15 @@ class Video(object):
         self._library = library
         self._server = self._library._server
         self._video_data = video_data
-        self._data = self._extract_data()
 
     def __repr__(self):
-        pass
+        return str(self.get_data())
 
     def __str__(self):
-        return str(self._data)
+        return str(self.get_data())
 
-    @property
     def get_data(self):
-        return self._data
+        return self._extract_data()
 
     def _query_show_metadata(self, metadata_key, index):
         assert isinstance(metadata_key, str)
@@ -265,9 +322,9 @@ class Season(object):
     pass
 
 
-class TVShow(Video):
+class Episode(Video):
     def __init__(self, library, video_data):
-        super(TVShow, self).__init__(library, video_data)
+        super(Episode, self).__init__(library, video_data)
 
     def _extract_data(self):
         output = {}
@@ -310,6 +367,7 @@ class TVShow(Video):
             """
             Check if Originally Available Date and Added at date exist.
             Convert to date time objects, and format datetime object
+
             :param value: key value for lookup in element
             :type value: str
             :param date_format: datetime format string
@@ -319,14 +377,16 @@ class TVShow(Video):
             """
             try:
                 if date_format:
+                    # parse string with supplied date formatting string
                     output = datetime.datetime.strptime(attribs[value],
                                                         date_format)
                 else:
+                    # no formatting string supplied, assume time since epoch
                     output = datetime.datetime.fromtimestamp(
                         int(attribs[value]))
                 output_conv = convert_date(output)
             except KeyError:
-                # Originally Available At data not available
+                # Date data not available
                 output, output_conv = ['Not available'] * 2
             return output, output_conv
 
@@ -345,12 +405,17 @@ class TVShow(Video):
                       title=attribs.get('title', ''),
                       addedAt=added_at_conv,
                       basetype=attribs.get('type', 0))
+        if not JSON_OUTPUT:
+            output.update(addedAt_dt=added_at,
+                          originallyAvailableAt_dt=orig_avail)
         for element in metadata:
             if element.tag == 'Media':
-                value = Media(element).get_info
+                # capture Media data in Media object
+                value = Media(element).get_data()
             else:
                 value = element.attrib
                 value = value['tag']
+                # Extract Writers, directors, etc
             if element.tag in output:
                 output[element.tag] += [value]
             else:
@@ -371,20 +436,41 @@ class Movie(Video):
 
 class Media(object):
     """
-    Media object.  Returns data regarding the media type for a Video
+    Media object.  Returns data regarding the media type for a Video in
+    a dictionary
+
+        'aspectRatio': '1.78', (width / height)
+        'audioChannels': 6,
+        'audioCodec': 'ac3',
+        'bitrate': 4340,
+        'container': 'mkv',
+        'duration': 1399107, (in microseconds)
+        'file': '/TV/Show Title/Season XX/Filename.ext', (directory location)
+        'height': 720, (in pixels)
+        'id': 2177,
+        'key': '/library/parts/2177/file.ext',
+        'size': 758966231, (in bytes)
+        'videoCodec': 'h264',
+        'videoFrameRate': '24p',
+        'videoResolution': 720,
+        'width': 1280 (in pixels)
     """
     def __init__(self, data):
         assert isinstance(data, Element)
-        self._data = data
-        self._output = self._parse_data()
+        self.element = data
 
-    @property
-    def get_info(self):
+    def __repr__(self):
+        return str(self.element)
+
+    def __str__(self):
+        return str(self.get_data())
+
+    def get_data(self):
         """
         Returns parsed data regarding media type
         :return: dict
         """
-        return self._output
+        return determine_output(self._parse_data())
 
     def _parse_data(self):
         """
@@ -407,13 +493,17 @@ class Media(object):
                     # not an integer, save as original value
                     output[key] = data.attrib[key]
         output = {}
-        save_values(self._data)
-        for element in self._data:
+        save_values(self.element)
+        for element in self.element:
+            # loop through child element to capture data
             save_values(element)
-        return determine_output(output)
+        return output
 
 
 class PlexConnectionError(Exception):
+    """
+    Unable to connect to Plex server
+    """
     pass
 
 

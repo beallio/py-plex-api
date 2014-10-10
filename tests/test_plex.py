@@ -1,6 +1,7 @@
 import unittest
 import plexapi
 import json
+from xml.etree.ElementTree import Element
 
 
 class testPlexServer(unittest.TestCase):
@@ -12,7 +13,7 @@ class testPlexServer(unittest.TestCase):
     def setUpClass(cls):
         cls.server = plexapi.Server(testPlexServer.server_url,
                                     testPlexServer.server_port)
-        cls.library = cls.server.library()
+        cls.library = cls.server.library
 
     def test_bad_connection(self):
         with self.assertRaises(plexapi.PlexConnectionError):
@@ -26,25 +27,25 @@ class testPlexServer(unittest.TestCase):
         plex = testPlexServer.server
         self.assertIsInstance(plex.__str__(), str)
 
-    def test_server_get_info(self):
+    def test_server_info(self):
         plex = testPlexServer.server
-        json_converted = json.loads(plex.get_info())
-        self.assertIsInstance(json_converted, dict)
+        self.assertIsInstance(json.loads(plex.json), dict)
+        self.assertIsInstance(plex.xml, Element)
 
     def test_server_servers(self):
         plex = testPlexServer.server
-        json_converted = json.loads(plex.get_servers())
-        self.assertIsInstance(json_converted, list)
+        self.assertIsInstance(json.loads(plex.servers.json), dict)
+        self.assertIsInstance(plex.servers.xml, Element)
 
     def test_server_channels(self):
         plex = testPlexServer.server
-        json_converted = json.loads(plex.get_channels())
-        self.assertIsInstance(json_converted, list)
+        self.assertIsInstance(json.loads(plex.channels.json), dict)
+        self.assertIsInstance(plex.channels.xml, Element)
 
     def test_server_prefs(self):
         plex = testPlexServer.server
-        json_converted = json.loads(plex.get_preferences())
-        self.assertIsInstance(json_converted, list)
+        self.assertIsInstance(json.loads(plex.preferences.json), dict)
+        self.assertIsInstance(plex.preferences.xml, Element)
 
     def test_print_library(self):
         library = testPlexServer.library
