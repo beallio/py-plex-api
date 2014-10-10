@@ -9,28 +9,10 @@ import json
 from xml.etree.ElementTree import XML, Element, tostring
 from xmltodict import parse as xmlparse
 
+import exceptions as plexexc
+
 
 LOGGER = logging.getLogger(__name__)
-JSON_OUTPUT = True
-
-
-def split_output(result):
-    if ',' in result:
-        result = tuple(result.split(','))
-        try:
-            result = tuple([int(itm) for itm in result])
-        except TypeError:
-            pass
-    return result
-
-
-def determine_output(values):
-    if JSON_OUTPUT:
-        assert isinstance(values, OrderedDict)
-        output = convert_xml_to_json(values)
-    else:
-        output = XML(values)
-    return output
 
 
 def convert_xml_to_json(values):
@@ -39,6 +21,9 @@ def convert_xml_to_json(values):
     output = json.dumps(values, sort_keys=True, skipkeys=True)
     return output
 
+
+def convert_parse_dump_json(xml):
+    return json.dumps(xmlparse(tostring(xml)))
 
 class Server(object):
     """
@@ -135,7 +120,7 @@ class Server(object):
                 urlparse.urljoin(self.address_and_port, full_api_call))
             output = resp.read()
         except urllib2.URLError as err:
-            raise PlexConnectionError(err)
+            raise plexexc.PlexConnectionError(err)
         else:
             resp.close()
         return output
@@ -302,7 +287,15 @@ class Video(object):
 
     @property
     def json(self):
-        return json.dumps(xmlparse(tostring(self.xml)))
+        return convert_parse_dump_json(self.xml)
+
+    @property
+    def media(self):
+        """
+        returns list of all media elements for Video object
+        :return: lst
+        """
+        return [Media(media) for media in self.xml.findall('Media')]
 
     def _get_metadata(self):
         # to be overwritten by subclass
@@ -315,9 +308,9 @@ class Video(object):
         try:
             metadata = self._server.query(self._server.METADATA, shows_key)
         except KeyError as err:
-            raise PlexMissingVideoKey(err)
+            raise plexexc.PlexMissingVideoKey(err)
         except urllib2.URLError as err:
-            raise PlexConnectionError(err)
+            raise plexexc.PlexConnectionError(err)
         else:
             return metadata
 
@@ -335,7 +328,7 @@ class Episode(Video):
             # shows are in array base 1, so offset by -1 to find correct show
             show_index = int(self.leafCount) - 1
         except KeyError as err:
-            raise PlexMissingVideoKey(err)
+            raise plexexc.PlexMissingVideoKey(err)
         else:
             return self._season_metadata[show_index]
 
@@ -343,7 +336,7 @@ class Episode(Video):
         try:
             season_key = self.key
         except KeyError as err:
-            raise PlexMissingVideoKey(err)
+            raise plexexc.PlexMissingSeasonKey(err)
         else:
             return XML(self. _query_season_metadata(season_key))
 
@@ -374,167 +367,43 @@ class Media(object):
         'videoResolution': 720,
         'width': 1280 (in pixels)
     """
-    def __init__(self, data):
-        assert isinstance(data, Element)
-        self.element = data
+    def __init__(self, xml):
+        assert isinstance(xml, Element)
+        self.xml = xml
+        self.__dict__ = dict(self.__dict__.items() + self.xml.attrib.items())
+        self.part = Part(self.xml)
 
     def __repr__(self):
-        return str(self.element)
+        return str(self.__dict__)
 
     def __str__(self):
-        return str(self.get_data())
+        pass
 
-    def get_data(self):
-        """
-        Returns parsed data regarding media type
-        :return: dict
-        """
-        return determine_output(self._parse_data())
-
-    def _parse_data(self):
-        """
-        Parses data for media type from container element
-        :return: dict
-        """
-        def save_values(data):
-            """
-            Loops through element attribute dictionary and saves data to output
-            dict
-            :param data: element attribute dictionary
-            :type data: Element
-            :return: None
-            """
-            for key in data.attrib:
-                try:
-                    # attempt to save key as int
-                    output[key] = int(data.attrib[key])
-                except (ValueError, KeyError):
-                    # not an integer, save as original value
-                    output[key] = data.attrib[key]
-        output = {}
-        save_values(self.element)
-        for element in self.element:
-            # loop through child element to capture data
-            save_values(element)
-        return output
+    @property
+    def json(self):
+        return convert_parse_dump_json(self.xml)
 
 
-class PlexConnectionError(Exception):
+class Part(object):
     """
-    Unable to connect to Plex server
+    'container': 'mkv',
+    'duration': '1399107', (microseconds)
+    'file': '/path/filename.mkv',
+    'id': '2177',
+    'key': '/library/parts/2177/file.mkv',
+    'size': u'758966231' (in bytes)
     """
-    pass
+    def __init__(self, xml):
+        assert isinstance(xml, Element)
+        self.xml = xml.find('Part')
+        self.__dict__ = dict(self.__dict__.items() + self.xml.attrib.items())
 
+    def __repr__(self):
+        return str(self.__dict__)
 
-class PlexAPIKeyNotFound(Exception):
-    pass
+    def __str__(self):
+        pass
 
-
-class PlexLibraryUndefinedType(Exception):
-    pass
-
-
-class PlexMissingVideoKey(Exception):
-    pass
-
-
-class OldEpisode(Video):
-    #// TODO REMOVE OLD CODE
-    def __init__(self, library, video_data):
-        super(Episode, self).__init__(library, video_data)
-
-    def _extract_data(self):
-        output = {}
-        elem_data = self._video_data.attrib
-        output.update(type=elem_data.get('librarySectionTitle', 'Unknown'),
-                      series_summary=elem_data.get('parentSummary', ''),
-                      series_title=elem_data.get('parentTitle', ''),
-                      series_coverart=elem_data.get('parentThumb', ''),
-                      season_coverart=elem_data.get('thumb', ''),
-                      season=elem_data.get('title', ''))
-        try:
-            show_index = int(elem_data['leafCount'])
-            shows_in_season = elem_data['key']
-        except KeyError as err:
-            raise PlexMissingVideoKey(err)
-        else:
-            video_metadata = self._query_show_metadata(shows_in_season,
-                                                       show_index)
-            output.update(self._process_metadata(video_metadata))
-        return determine_output(output)
-
-    def _process_metadata(self, metadata):
-        """
-
-        Notes: Plex returns duration is in microseconds; addedAt in time since
-         epoch; and originallyAvailableAt in format YYYY-MM-DD
-
-        Convert duration to seconds, addedAt and originallyAvailableAt to
-         datetime objects
-
-        :param metadata:
-        :return:
-        """
-
-        def convert_date(dt_obj):
-            assert isinstance(dt_obj, datetime.datetime)
-            return dt_obj.strftime(self.DATE_FORMAT)
-
-        def check_dates(value, date_format=None):
-            """
-            Check if Originally Available Date and Added at date exist.
-            Convert to date time objects, and format datetime object
-
-            :param value: key value for lookup in element
-            :type value: str
-            :param date_format: datetime format string
-            :type date_format: str
-            :return output: datetime.datetime
-            :return output_conv: str
-            """
-            try:
-                if date_format:
-                    # parse string with supplied date formatting string
-                    output = datetime.datetime.strptime(attribs[value],
-                                                        date_format)
-                else:
-                    # no formatting string supplied, assume time since epoch
-                    output = datetime.datetime.fromtimestamp(
-                        int(attribs[value]))
-                output_conv = convert_date(output)
-            except KeyError:
-                # Date data not available
-                output, output_conv = ['Not available'] * 2
-            return output, output_conv
-
-        assert isinstance(metadata, Element)
-        output = {}
-        attribs = metadata.attrib
-        orig_avail, orig_avail_conv = check_dates('originallyAvailableAt',
-                                                  '%Y-%m-%d')
-        added_at, added_at_conv = check_dates('addedAt')
-        output.update(show_coverart=attribs.get('thumb', ''),
-                      duration_seconds=float(
-                          attribs.get('duration', 0)) / 1000.0,
-                      originallyAvailableAt=orig_avail_conv,
-                      rating=float(attribs.get('rating', 0)),
-                      summary=attribs.get('summary', ''),
-                      title=attribs.get('title', ''),
-                      addedAt=added_at_conv,
-                      basetype=attribs.get('type', 0))
-        if not JSON_OUTPUT:
-            output.update(addedAt_dt=added_at,
-                          originallyAvailableAt_dt=orig_avail)
-        for element in metadata:
-            if element.tag == 'Media':
-                # capture Media data in Media object
-                value = Media(element).get_data()
-            else:
-                value = element.attrib
-                value = value['tag']
-                # Extract Writers, directors, etc
-            if element.tag in output:
-                output[element.tag] += [value]
-            else:
-                output[element.tag] = [value]
-        return output
+    @property
+    def json(self):
+        return convert_parse_dump_json(self.xml)
