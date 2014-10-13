@@ -91,4 +91,3 @@ Thumbs.db
 tmp
 wsgi.py
 ignore*
-ignore-old.py

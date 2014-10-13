@@ -1,18 +1,11 @@
-import logging
 import urllib2
 import urlparse
-from collections import OrderedDict, namedtuple
-from operator import itemgetter
-import datetime
 import json
 
 from xml.etree.ElementTree import XML, Element, tostring
 from xmltodict import parse as xmlparse
 
 import exceptions as plexexc
-
-
-LOGGER = logging.getLogger(__name__)
 
 
 def convert_xml_to_json(values):
@@ -61,7 +54,7 @@ class Server(object):
         assert isinstance(port, int)
         self._address = address.rstrip('/')
         self._port = port
-        self.info = self._test_connection()
+        self.info = self.query(Server.SERVERINFO)
 
     def __repr__(self):
         return str(convert_xml_to_json(self.info))
@@ -71,6 +64,12 @@ class Server(object):
 
     @property
     def address_and_port(self):
+        """
+        Creates full HTTP address for plex server
+        >>> 'http://192.168.1.10:32400'
+
+        :return: str
+        """
         scheme = 'http'
         address = self._address
         if not address.startswith(scheme):
@@ -79,10 +78,18 @@ class Server(object):
 
     @property
     def json(self):
-        return convert_xml_to_json(self.info)
+        """
+        Returns data in JSON-parsed string
+        :return: str
+        """
+        return json.dumps(xmlparse(self.info))
 
     @property
     def xml(self):
+        """
+        Returns data in an XML element
+        :return: Element
+        """
         return XML(self.info)
 
     @property
@@ -99,7 +106,7 @@ class Server(object):
 
     @property
     def channels(self):
-        return Servers(server=self, query=Server.CHANNELS_ALL)
+        return Channels(server=self, query=Server.CHANNELS_ALL)
 
     def query(self, api_call, library_id=None):
         """
@@ -163,6 +170,10 @@ class Base(object):
     def query(self):
         return self._server.query(self._query)
 
+    @property
+    def items(self):
+        return False
+
 
 class Preferences(Base):
     def __init__(self, server, query):
@@ -178,10 +189,18 @@ class Channels(Base):
     def __init__(self, server, query):
         super(Channels, self).__init__(server, query)
 
+    @property
+    def items(self):
+        return [Channel(channel) for channel in self.xml]
+
 
 class Sections(Base):
     def __init__(self, server, query):
         super(Sections, self).__init__(server, query)
+
+    @property
+    def items(self):
+        return [Section(self._server, section) for section in self.xml]
 
 
 class NowPlaying(Base):
@@ -196,6 +215,12 @@ class RecentlyAdded(Base):
     def __init__(self, server, query):
         super(RecentlyAdded, self).__init__(server, query)
 
+    def __repr__(self):
+        return str(self.items)
+
+    def __str__(self):
+        return str(self.__dict__)
+
     @property
     def episodes(self):
         return RecentlyAddedVideos(class_obj=self, query=RecentlyAdded.EPISODES)
@@ -203,6 +228,18 @@ class RecentlyAdded(Base):
     @property
     def movies(self):
         return RecentlyAddedVideos(class_obj=self, query=RecentlyAdded.MOVIES)
+
+    @property
+    def items(self):
+        output = []
+        for video in self.xml:
+            if RecentlyAdded.EPISODES == video.tag:
+                output += [Episode(self._server, video)]
+            elif RecentlyAdded.MOVIES == video.tag:
+                output += [Movie(self._server, video)]
+            else:
+                raise plexexc.PlexLibraryUndefinedType
+        return output
 
 
 class RecentlyAddedVideos(object):
@@ -221,6 +258,10 @@ class RecentlyAddedVideos(object):
     def xml(self):
         return self._get_videos_xml()
 
+    def _get_videos_xml(self):
+        xml = XML(self._class_obj.query())
+        return xml.findall(self._query)
+
     @property
     def items(self):
         if self._query == RecentlyAdded.MOVIES:
@@ -229,10 +270,6 @@ class RecentlyAddedVideos(object):
         if self._query == RecentlyAdded.EPISODES:
             return [Episode(xml=episode, server=self._server) for episode in
                     self._get_videos_xml()]
-
-    def _get_videos_xml(self):
-        xml = XML(self._class_obj.query())
-        return xml.findall(self._query)
 
 
 class Library(Base):
@@ -252,20 +289,52 @@ class Library(Base):
 
     @property
     def sections(self):
-        return Base(self._server, self._server.LIBRARYSECTIONS)
+        return Sections(self._server, self._server.LIBRARYSECTIONS)
 
 
 class Section(object):
-    def __init__(self, library):
-        assert isinstance(library, Library)
-        pass
+    """
+    Section object.  Contains data regarding a library Section Type in a
+    dictionary
+
+     '@agent': 'com.plexapp.agents.imdb',
+     '@allowSync': '0',
+     '@art': '/:/resources/movie-fanart.jpg',
+     '@composite': '/library/sections/1/composite/1413178721',
+     '@createdAt': '1403479581',
+     '@filters': '1',
+     '@key': '1',
+     '@language': 'en',
+     '@refreshing': '0',
+     '@scanner': 'Plex Movie Scanner',
+     '@thumb': '/:/resources/movie.png',
+     '@title': 'Movies',
+     '@type': 'movie',
+     '@updatedAt': '1413178721',
+     '@uuid': 'ccc3be41-8fe3-46fb-8999-2609788f733e',
+     'Location': {'@id': '1',
+                   '@path': '/Entertainment/Movies'}
+
+    """
+    def __init__(self, server, xml):
+        assert isinstance(server, Server)
+        self.xml = xml
+        self.__dict__ = dict(self.__dict__.items() + xml.attrib.items())
+
+    @property
+    def json(self):
+        return convert_parse_dump_json(self.xml)
 
 
 class Season(object):
-    def __init__(self, library):
+    def __init__(self, library, xml):
         assert isinstance(library, Library)
-        pass
-    pass
+        self.xml = xml
+        self.__dict__ = dict(self.__dict__.items() + xml.attrib.items())
+
+    @property
+    def json(self):
+        return convert_parse_dump_json(self.xml)
 
 
 class Video(object):
@@ -277,10 +346,10 @@ class Video(object):
         self.__dict__ = dict(self.__dict__.items() + xml.attrib.items())
 
     def __repr__(self):
-        pass
+        return str(self.__dict__)
 
     def __str__(self):
-        pass
+        return str(self.__dict__)
 
     @property
     def json(self):
@@ -355,7 +424,7 @@ class Media(object):
         return str(self.__dict__)
 
     def __str__(self):
-        pass
+        return str(self.__dict__)
 
     @property
     def json(self):
@@ -398,7 +467,7 @@ class File(object):
         return str(self.__dict__)
 
     def __str__(self):
-        pass
+        return str(self.__dict__)
 
     @property
     def json(self):
@@ -424,6 +493,16 @@ class Part(object):
 
     def __str__(self):
         pass
+
+    @property
+    def json(self):
+        return convert_parse_dump_json(self.xml)
+
+
+class Channel(object):
+    def __init__(self, xml):
+        self.xml = xml
+        self.__dict__ = dict(self.__dict__.items() + xml.attrib.items())
 
     @property
     def json(self):
